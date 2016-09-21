@@ -1,0 +1,456 @@
+Index: src/org/apache/lucene/index/IndexGate.java
+===================================================================
+--- src/org/apache/lucene/index/IndexGate.java	(Revision 79)
++++ src/org/apache/lucene/index/IndexGate.java	(Arbeitskopie)
+@@ -196,7 +196,7 @@
+       names.addAll(info.files());
+       names.add(info.getDelFileName());
+     }
+-    names.add(infos.getCurrentSegmentFileName());
++    names.add(infos.getSegmentsFileName());
+     names.add(IndexFileNames.SEGMENTS_GEN);
+     return names;
+   }
+Index: src/org/getopt/luke/DocReconstructor.java
+===================================================================
+--- src/org/getopt/luke/DocReconstructor.java	(Revision 79)
++++ src/org/getopt/luke/DocReconstructor.java	(Arbeitskopie)
+@@ -1,11 +1,27 @@
+ package org.getopt.luke;
+ 
+-import java.util.*;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.Collections;
++import java.util.HashMap;
++import java.util.HashSet;
++import java.util.Iterator;
++import java.util.LinkedList;
++import java.util.List;
++import java.util.Map;
++import java.util.Observable;
+ 
+ import org.apache.lucene.document.Document;
+ import org.apache.lucene.document.Fieldable;
+-import org.apache.lucene.index.*;
+-import org.apache.lucene.index.IndexReader.FieldOption;
++import org.apache.lucene.index.FieldInfo;
++import org.apache.lucene.index.IndexReader;
++import org.apache.lucene.index.Term;
++import org.apache.lucene.index.TermEnum;
++import org.apache.lucene.index.TermFreqVector;
++import org.apache.lucene.index.TermPositionVector;
++import org.apache.lucene.index.TermPositions;
++import org.apache.lucene.index.TermVectorOffsetInfo;
++import org.apache.lucene.util.ReaderUtil;
+ 
+ /**
+  * This class attempts to reconstruct all fields from a document
+@@ -49,7 +65,13 @@
+     this.reader = reader;
+     if (fieldNames == null || fieldNames.length == 0) {
+       // collect fieldNames
+-      this.fieldNames = (String[])reader.getFieldNames(FieldOption.ALL).toArray(new String[0]);
++      final Iterator<FieldInfo> it =  ReaderUtil.getMergedFieldInfos(reader).iterator();
++      final List<String> names = new LinkedList<String>(); 
++      while(it.hasNext()) {
++        final FieldInfo info = it.next();
++        names.add(info.name);
++      }
++      this.fieldNames = names.toArray(new String[names.size()]);
+     } else {
+       this.fieldNames = fieldNames;
+     }
+Index: src/org/getopt/luke/IndexInfo.java
+===================================================================
+--- src/org/getopt/luke/IndexInfo.java	(Revision 79)
++++ src/org/getopt/luke/IndexInfo.java	(Arbeitskopie)
+@@ -3,14 +3,16 @@
+ import java.util.ArrayList;
+ import java.util.Collections;
+ import java.util.Date;
++import java.util.Iterator;
+ import java.util.List;
+ 
++import org.apache.lucene.index.FieldInfo;
+ import org.apache.lucene.index.IndexGate;
++import org.apache.lucene.index.IndexGate.FormatDetails;
+ import org.apache.lucene.index.IndexReader;
+ import org.apache.lucene.index.TermEnum;
+-import org.apache.lucene.index.IndexGate.FormatDetails;
+-import org.apache.lucene.index.IndexReader.FieldOption;
+ import org.apache.lucene.store.Directory;
++import org.apache.lucene.util.ReaderUtil;
+ 
+ public class IndexInfo {
+   private IndexReader reader;
+@@ -49,7 +51,11 @@
+       numTerms++;
+     te.close();
+     fieldNames = new ArrayList<String>();
+-    fieldNames.addAll(reader.getFieldNames(FieldOption.ALL));
++    final Iterator<FieldInfo> it =  ReaderUtil.getMergedFieldInfos(reader).iterator();
++    while(it.hasNext()) {
++      final FieldInfo info = it.next();
++      fieldNames.add(info.name);
++    }
+     Collections.sort(fieldNames);
+     if (dir != null) {
+       indexFormat = IndexGate.getIndexFormat(dir);
+Index: src/org/getopt/luke/Luke.java
+===================================================================
+--- src/org/getopt/luke/Luke.java	(Revision 79)
++++ src/org/getopt/luke/Luke.java	(Arbeitskopie)
+@@ -24,37 +24,94 @@
+ import java.awt.datatransfer.ClipboardOwner;
+ import java.awt.datatransfer.StringSelection;
+ import java.awt.datatransfer.Transferable;
+-import java.io.*;
++import java.io.BufferedReader;
++import java.io.ByteArrayInputStream;
++import java.io.File;
++import java.io.FileOutputStream;
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.InputStreamReader;
++import java.io.OutputStream;
++import java.io.StringReader;
++import java.io.UnsupportedEncodingException;
+ import java.lang.reflect.Constructor;
+ import java.lang.reflect.Method;
+ import java.text.DecimalFormat;
+ import java.text.NumberFormat;
+-import java.util.*;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.Collection;
++import java.util.Collections;
++import java.util.Date;
++import java.util.HashMap;
++import java.util.HashSet;
++import java.util.Iterator;
++import java.util.List;
++import java.util.Map;
+ import java.util.Map.Entry;
++import java.util.Observable;
++import java.util.Observer;
++import java.util.TreeMap;
++import java.util.TreeSet;
+ import java.util.zip.GZIPOutputStream;
+ 
+ import javax.swing.JFileChooser;
+ import javax.swing.UIManager;
+ 
+ import org.apache.lucene.LucenePackage;
+-import org.apache.lucene.analysis.*;
++import org.apache.lucene.analysis.Analyzer;
++import org.apache.lucene.analysis.SimpleAnalyzer;
++import org.apache.lucene.analysis.StopAnalyzer;
++import org.apache.lucene.analysis.WhitespaceAnalyzer;
+ import org.apache.lucene.analysis.payloads.PayloadHelper;
+ import org.apache.lucene.analysis.standard.StandardAnalyzer;
+ import org.apache.lucene.document.DateTools;
+ import org.apache.lucene.document.Document;
+ import org.apache.lucene.document.Field;
+-import org.apache.lucene.document.Fieldable;
+-import org.apache.lucene.document.NumberTools;
+ import org.apache.lucene.document.Field.Index;
+ import org.apache.lucene.document.Field.Store;
+-import org.apache.lucene.index.*;
++import org.apache.lucene.document.Fieldable;
++import org.apache.lucene.index.CheckIndex;
++import org.apache.lucene.index.FieldInfo;
+ import org.apache.lucene.index.FieldInfo.IndexOptions;
+-import org.apache.lucene.index.IndexReader.FieldOption;
++import org.apache.lucene.index.IndexCommit;
++import org.apache.lucene.index.IndexDeletionPolicy;
++import org.apache.lucene.index.IndexGate;
++import org.apache.lucene.index.IndexReader;
++import org.apache.lucene.index.IndexWriter;
+ import org.apache.lucene.index.IndexWriter.MaxFieldLength;
++import org.apache.lucene.index.IndexWriterConfig;
++import org.apache.lucene.index.LogMergePolicy;
++import org.apache.lucene.index.MergePolicy;
++import org.apache.lucene.index.MultiReader;
++import org.apache.lucene.index.Term;
++import org.apache.lucene.index.TermEnum;
++import org.apache.lucene.index.TermFreqVector;
++import org.apache.lucene.index.TermPositionVector;
++import org.apache.lucene.index.TermPositions;
++import org.apache.lucene.index.TermVectorOffsetInfo;
++import org.apache.lucene.index.TieredMergePolicy;
+ import org.apache.lucene.misc.SweetSpotSimilarity;
+ import org.apache.lucene.queryParser.QueryParser;
+-import org.apache.lucene.search.*;
++import org.apache.lucene.search.BooleanClause;
+ import org.apache.lucene.search.BooleanClause.Occur;
++import org.apache.lucene.search.BooleanQuery;
++import org.apache.lucene.search.Collector;
++import org.apache.lucene.search.DefaultSimilarity;
++import org.apache.lucene.search.DocIdSetIterator;
++import org.apache.lucene.search.Explanation;
++import org.apache.lucene.search.FilteredQuery;
++import org.apache.lucene.search.FilteredTermEnum;
++import org.apache.lucene.search.FuzzyQuery;
++import org.apache.lucene.search.IndexSearcher;
++import org.apache.lucene.search.MultiPhraseQuery;
++import org.apache.lucene.search.PhraseQuery;
++import org.apache.lucene.search.PrefixQuery;
++import org.apache.lucene.search.Query;
++import org.apache.lucene.search.Similarity;
++import org.apache.lucene.search.TermQuery;
++import org.apache.lucene.search.TermRangeQuery;
++import org.apache.lucene.search.WildcardQuery;
+ import org.apache.lucene.search.payloads.PayloadNearQuery;
+ import org.apache.lucene.search.payloads.PayloadTermQuery;
+ import org.apache.lucene.search.similar.MoreLikeThis;
+@@ -65,8 +122,13 @@
+ import org.apache.lucene.search.spans.SpanQuery;
+ import org.apache.lucene.search.spans.SpanTermQuery;
+ import org.apache.lucene.search.spans.Spans;
+-import org.apache.lucene.store.*;
++import org.apache.lucene.store.Directory;
++import org.apache.lucene.store.FSDirectory;
++import org.apache.lucene.store.MMapDirectory;
++import org.apache.lucene.store.NIOFSDirectory;
++import org.apache.lucene.store.RAMDirectory;
+ import org.apache.lucene.util.NumericUtils;
++import org.apache.lucene.util.ReaderUtil;
+ import org.apache.lucene.util.Version;
+ import org.apache.lucene.xmlparser.CoreParser;
+ import org.apache.lucene.xmlparser.CorePlusExtensionsParser;
+@@ -82,8 +144,8 @@
+ import org.getopt.luke.decoders.OldNumberToolsDecoder;
+ import org.getopt.luke.decoders.StringDecoder;
+ import org.getopt.luke.plugins.ScriptingPlugin;
++import org.getopt.luke.xmlQuery.CorePlusExtensionsParserFactory;
+ import org.getopt.luke.xmlQuery.XmlQueryParserFactory;
+-import org.getopt.luke.xmlQuery.CorePlusExtensionsParserFactory;
+ 
+ import thinlet.FrameLauncher;
+ import thinlet.Thinlet;
+@@ -1029,7 +1091,12 @@
+       iDocs = find("iDocs1");
+       setString(iDocs, "text", String.valueOf(ir.maxDoc() - 1));
+       Object iFields = find(pOver, "iFields");
+-      fn = ir.getFieldNames(IndexReader.FieldOption.ALL);
++      fn = new ArrayList<String>();
++      final Iterator<FieldInfo> it =  ReaderUtil.getMergedFieldInfos(ir).iterator();
++      while(it.hasNext()) {
++        final FieldInfo info = it.next();
++        fn.add(info.name);
++      }
+       if (fn.size() == 0) {
+         showStatus("Empty index.");
+       }
+@@ -2449,8 +2516,8 @@
+       errorMsg("Invalid document number");
+       return;
+     }
+-    MoreLikeThis mlt = new MoreLikeThis(ir, similarity != null ? similarity : new DefaultSimilarity());
+-    mlt.setFieldNames((String[])ir.getFieldNames(FieldOption.INDEXED).toArray(new String[0]));
++    MoreLikeThis mlt = new MoreLikeThis(ir, similarity != null ? similarity : new DefaultSimilarity());    
++    mlt.setFieldNames(ReaderUtil.getIndexedFields(ir).toArray(new String[0]));
+     mlt.setMinTermFreq(1);
+     mlt.setMaxQueryTerms(50);
+     mlt.setAnalyzer(createAnalyzer(find("srchOptTabs")));
+Index: src/org/getopt/luke/plugins/ZipfAnalysisPlugin.java
+===================================================================
+--- src/org/getopt/luke/plugins/ZipfAnalysisPlugin.java	(Revision 79)
++++ src/org/getopt/luke/plugins/ZipfAnalysisPlugin.java	(Arbeitskopie)
+@@ -7,9 +7,8 @@
+ 
+ import org.apache.lucene.index.IndexReader;
+ import org.apache.lucene.index.Term;
+-import org.apache.lucene.index.TermDocs;
+ import org.apache.lucene.index.TermEnum;
+-import org.apache.lucene.index.IndexReader.FieldOption;
++import org.apache.lucene.util.ReaderUtil;
+ import org.getopt.luke.LukePlugin;
+ import org.getopt.luke.SlowThread;
+ 
+@@ -63,11 +62,11 @@
+     chart = new VocabChart(app, container);
+     app.setComponent(bean, "bean", chart);
+     IndexReader reader = getIndexReader();
+-    if (reader != null) {
+-      Collection fieldNames = reader.getFieldNames(FieldOption.INDEXED);
++    if (reader != null) {      
++      Collection<String> fieldNames = ReaderUtil.getIndexedFields(reader);
+       String firstField = null;
+-      for (Iterator iter = fieldNames.iterator(); iter.hasNext();) {
+-        String fieldName = (String) iter.next();
++      for (Iterator<String> iter = fieldNames.iterator(); iter.hasNext();) {
++        String fieldName = iter.next();
+         if (firstField == null) {
+           firstField = fieldName;
+         }
+Index: src/org/getopt/luke/plugins/FsDirectory.java
+===================================================================
+--- src/org/getopt/luke/plugins/FsDirectory.java	(Revision 79)
++++ src/org/getopt/luke/plugins/FsDirectory.java	(Arbeitskopie)
+@@ -18,9 +18,9 @@
+ package org.getopt.luke.plugins;
+ 
+ 
+-import java.io.*;
+-import java.security.MessageDigest;
+-import java.security.NoSuchAlgorithmException;
++import java.io.File;
++import java.io.IOException;
++import java.io.RandomAccessFile;
+ import java.util.Random;
+ 
+ import net.sf.ehcache.Cache;
+@@ -28,12 +28,21 @@
+ import net.sf.ehcache.Element;
+ import net.sf.ehcache.store.MemoryStoreEvictionPolicy;
+ 
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.FSDataInputStream;
++import org.apache.hadoop.fs.FSDataOutputStream;
++import org.apache.hadoop.fs.FileStatus;
++import org.apache.hadoop.fs.FileSystem;
++import org.apache.hadoop.fs.FileUtil;
++import org.apache.hadoop.fs.Path;
+ import org.apache.log4j.Level;
+ import org.apache.log4j.LogManager;
+-import org.apache.lucene.store.*;
+-import org.apache.hadoop.fs.*;
+-import org.apache.hadoop.util.StringUtils;
+-import org.apache.hadoop.conf.Configuration;
++import org.apache.lucene.store.BufferedIndexInput;
++import org.apache.lucene.store.BufferedIndexOutput;
++import org.apache.lucene.store.Directory;
++import org.apache.lucene.store.IndexInput;
++import org.apache.lucene.store.IndexOutput;
++import org.apache.lucene.store.Lock;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+@@ -219,12 +228,6 @@
+       this.name = path.getName();
+       keyPrefix = path.toString() + ":";
+     }
+-
+-    @Override
+-    public void setBufferSize(int newSize) {
+-      reporter.reportStatus(name + ": setBufferSize=" + newSize);
+-      super.setBufferSize(newSize);
+-    }
+     
+     protected void readInternal(byte[] b, int offset, int len)
+       throws IOException {
+Index: src/org/getopt/luke/plugins/VocabAnalysisPlugin.java
+===================================================================
+--- src/org/getopt/luke/plugins/VocabAnalysisPlugin.java	(Revision 79)
++++ src/org/getopt/luke/plugins/VocabAnalysisPlugin.java	(Arbeitskopie)
+@@ -7,7 +7,7 @@
+ import org.apache.lucene.index.Term;
+ import org.apache.lucene.index.TermDocs;
+ import org.apache.lucene.index.TermEnum;
+-import org.apache.lucene.index.IndexReader.FieldOption;
++import org.apache.lucene.util.ReaderUtil;
+ import org.getopt.luke.LukePlugin;
+ import org.getopt.luke.SlowThread;
+ 
+@@ -61,10 +61,10 @@
+     chart = new VocabChart(app, container);
+     IndexReader reader = getIndexReader();
+     if (reader != null) {
+-      Collection fieldNames = reader.getFieldNames(FieldOption.INDEXED);
++      Collection<String> fieldNames = ReaderUtil.getIndexedFields(reader);
+       String firstField = null;
+-      for (Iterator iter = fieldNames.iterator(); iter.hasNext();) {
+-        String fieldName = (String) iter.next();
++      for (Iterator<String> iter = fieldNames.iterator(); iter.hasNext();) {
++        String fieldName = iter.next();
+         if (firstField == null) {
+           firstField = fieldName;
+         }
+Index: src/org/getopt/luke/XMLExporter.java
+===================================================================
+--- src/org/getopt/luke/XMLExporter.java	(Revision 79)
++++ src/org/getopt/luke/XMLExporter.java	(Arbeitskopie)
+@@ -1,16 +1,33 @@
+ package org.getopt.luke;
+ 
+-import java.io.*;
+-import java.util.*;
++import java.io.BufferedWriter;
++import java.io.File;
++import java.io.FileOutputStream;
++import java.io.OutputStream;
++import java.io.OutputStreamWriter;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.Collections;
++import java.util.Date;
++import java.util.Iterator;
++import java.util.List;
++import java.util.Map;
++import java.util.Observable;
+ import java.util.zip.GZIPOutputStream;
+ 
+ import org.apache.lucene.document.Document;
+ import org.apache.lucene.document.Fieldable;
+-import org.apache.lucene.index.*;
+-import org.apache.lucene.index.IndexReader.FieldOption;
++import org.apache.lucene.index.FieldInfo;
++import org.apache.lucene.index.IndexCommit;
++import org.apache.lucene.index.IndexGate;
++import org.apache.lucene.index.IndexReader;
++import org.apache.lucene.index.TermFreqVector;
++import org.apache.lucene.index.TermPositionVector;
++import org.apache.lucene.index.TermVectorOffsetInfo;
+ import org.apache.lucene.search.Similarity;
+ import org.apache.lucene.store.Directory;
+ import org.apache.lucene.store.FSDirectory;
++import org.apache.lucene.util.ReaderUtil;
+ 
+ public class XMLExporter extends Observable {
+   private IndexReader reader;
+@@ -25,7 +42,11 @@
+     this.indexPath = indexPath;
+     // dump in predictable order
+     fieldNames = new ArrayList<String>();
+-    fieldNames.addAll(reader.getFieldNames(FieldOption.ALL));
++    final Iterator<FieldInfo> it =  ReaderUtil.getMergedFieldInfos(reader).iterator();
++    while(it.hasNext()) {
++      final FieldInfo info = it.next();
++      fieldNames.add(info.name);
++    }
+     Collections.sort(fieldNames);
+   }
+   
+Index: build.xml
+===================================================================
+--- build.xml	(Revision 79)
++++ build.xml	(Arbeitskopie)
+@@ -1,7 +1,7 @@
+ <project name="Luke" default="dist">
+ 	<defaultexcludes add="**/CVS"/>
+ 	<property name="build.dir" value="build"/>
+-	<property name="build.ver" value="3.5.0"/>
++	<property name="build.ver" value="3.6.0"/>
+ 	<property name="dist.dir" value="dist"/>
+ 	<property name="jarfile" value="${build.dir}/luke-${build.ver}.jar"/>
+ 	<property name="jarallfile" value="${build.dir}/lukeall-${build.ver}.jar"/>
+@@ -61,7 +61,7 @@
+ 				excludes="org/getopt/luke/plugins,**/*.js,**/Thumbs.db">
+ 			<manifest>
+ 				<attribute name="Main-Class" value="org.getopt.luke.Luke"/>
+-				<attribute name="Classpath" value="lucene-core-3.5.0.jar;js.jar;lucene-misc-3.5.0.jar;lucene-analyzers-3.5.0.jar"/>
++				<attribute name="Classpath" value="lucene-core-3.6.0.jar;js.jar;lucene-misc-3.6.0.jar;lucene-analyzers-3.6.0.jar"/>
+ 			</manifest>
+ 		</jar>
+ 		<unjar dest="${build.dir}">
+@@ -73,7 +73,7 @@
+ 		        excludes="org/mozilla/,org/getopt/luke/plugins,**/*.js">
+ 			<manifest>
+ 				<attribute name="Main-Class" value="org.getopt.luke.Luke"/>
+-				<attribute name="Classpath" value="lucene-core-3.5.0.jar;lucene-misc-3.5.0.jar"/>
++				<attribute name="Classpath" value="lucene-core-3.6.0.jar;lucene-misc-3.6.0.jar"/>
+ 			</manifest>
+ 		</jar>
+ 		<unjar dest="${build.dir}">
